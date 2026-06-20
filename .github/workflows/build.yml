@@ -10,6 +10,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      create_tag:
+        description: '创建并推送标签 (格式: v1.0.0)'
+        required: false
+        default: ''
+        type: string
       upload_artifacts:
         description: '上传构建产物'
         required: false
@@ -22,8 +27,38 @@ permissions:
   checks: write
 
 jobs:
+  create-tag:
+    name: 创建标签
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_tag != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: 验证标签格式
+        run: |
+          TAG="${{ inputs.create_tag }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::标签格式错误: $TAG"
+            echo "正确格式: v1.0.0, v1.0.0-beta.1"
+            exit 1
+          fi
+          echo "✅ 标签格式正确: $TAG"
+
+      - name: 创建并推送标签
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag -a "${{ inputs.create_tag }}" -m "Release ${{ inputs.create_tag }}"
+          git push origin "${{ inputs.create_tag }}"
+          echo "✅ 标签 ${{ inputs.create_tag }} 已创建并推送"
+
   verify:
     name: 构建与验证
+    if: ${{ ! (github.event_name == 'workflow_dispatch' && inputs.create_tag != '') }}
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
@@ -120,7 +155,8 @@ jobs:
           SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
           if [ -z "$SIGNING_KEYSTORE_BASE64" ]; then
-            echo "::error::未设置 SIGNING_KEYSTORE_BASE64 Secret，请先运行 Generate Signing Keystore 工作流"
+            echo "::error::未设置 SIGNING_KEYSTORE_BASE64 Secret"
+            echo "请先运行 Generate Signing Keystore 工作流并配置 Secrets"
             exit 1
           fi
           echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > ./release.keystore
@@ -133,13 +169,7 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
         run: |
           UNSIGNED=$(find ./artifacts/apk/ -name "*.apk" | head -1)
-          ${ANDROID_HOME}/build-tools/35.0.0/apksigner sign \
-            --ks ./release.keystore \
-            --ks-key-alias "$SIGNING_KEY_ALIAS" \
-            --ks-pass pass:"$SIGNING_STORE_PASSWORD" \
-            --key-pass pass:"$SIGNING_KEY_PASSWORD" \
-            --out ./artifacts/apk/app-release-signed.apk \
-            "$UNSIGNED"
+          ${ANDROID_HOME}/build-tools/35.0.0/apksigner sign             --ks ./release.keystore             --ks-key-alias "$SIGNING_KEY_ALIAS"             --ks-pass pass:"$SIGNING_STORE_PASSWORD"             --key-pass pass:"$SIGNING_KEY_PASSWORD"             --out ./artifacts/apk/app-release-signed.apk             "$UNSIGNED"
           ${ANDROID_HOME}/build-tools/35.0.0/apksigner verify ./artifacts/apk/app-release-signed.apk
           echo "✅ APK 签名成功"
 
@@ -150,13 +180,7 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
         run: |
           UNSIGNED=$(find ./artifacts/bundle/ -name "*.aab" | head -1)
-          jarsigner \
-            -keystore ./release.keystore \
-            -storepass "$SIGNING_STORE_PASSWORD" \
-            -keypass "$SIGNING_KEY_PASSWORD" \
-            -signedjar ./artifacts/bundle/app-release-signed.aab \
-            "$UNSIGNED" \
-            "$SIGNING_KEY_ALIAS"
+          jarsigner             -keystore ./release.keystore             -storepass "$SIGNING_STORE_PASSWORD"             -keypass "$SIGNING_KEY_PASSWORD"             -signedjar ./artifacts/bundle/app-release-signed.aab             "$UNSIGNED"             "$SIGNING_KEY_ALIAS"
           jarsigner -verify ./artifacts/bundle/app-release-signed.aab
           echo "✅ AAB 签名成功"
 
