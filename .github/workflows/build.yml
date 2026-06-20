@@ -1,0 +1,148 @@
+name: APK Build
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_preflight:
+        description: '运行 F-Droid 预检'
+        required: false
+        default: false
+        type: boolean
+      upload_artifacts:
+        description: '上传构建产物'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+jobs:
+  verify:
+    name: 构建与验证
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 设置 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 设置 Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-home-cache-cleanup: true
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: 赋予 Gradle 执行权限
+        run: chmod +x gradlew
+
+      - name: 运行 Lint 检查
+        run: ./gradlew :app:lintRelease
+        timeout-minutes: 10
+
+      - name: 运行单元测试
+        run: ./gradlew :app:testDebugUnitTest
+        timeout-minutes: 10
+
+      - name: 构建发布 APK
+        run: ./gradlew :app:assembleRelease
+        timeout-minutes: 15
+
+      - name: 构建发布 Bundle
+        run: ./gradlew :app:bundleRelease
+        timeout-minutes: 15
+
+      - name: 上传 Lint 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-release.html
+          retention-days: 7
+
+      - name: 上传测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: app/build/reports/tests/
+          retention-days: 7
+
+      - name: 上传 APK 产物
+        if: ${{ inputs.upload_artifacts || github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 14
+
+      - name: 上传 AAB 产物
+        if: ${{ inputs.upload_artifacts || github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: app/build/outputs/bundle/release/*.aab
+          retention-days: 14
+
+  fdroid-release-preflight:
+    name: F-Droid 发布预检
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.run_preflight }}
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 设置 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 设置 Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-home-cache-cleanup: true
+
+      - name: 赋予 Gradle 执行权限
+        run: chmod +x gradlew
+
+      - name: 安装 PowerShell
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https software-properties-common
+          wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prob.deb
+          sudo dpkg -i packages-microsoft-prob.deb
+          sudo apt-get update
+          sudo apt-get install -y powershell
+        timeout-minutes: 5
+
+      - name: 运行 F-Droid 预检
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/Test-FdroidPreflight.ps1 -UpdateMetadata
+        timeout-minutes: 20
+
+      - name: 上传 F-Droid 元数据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdroid-metadata
+          path: fdroiddata/metadata/
+          retention-days: 30
